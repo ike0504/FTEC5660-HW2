@@ -161,11 +161,16 @@ injection and still walk straight past the two education embellishments, while a
 the fake record.
 
 **Measured outcome.** Against the five shadow verifiers the submitted CV scores above 0.5 in the majority of
-three runs for all five; the rule-based, hardened, tool-calling and narrow-coverage designs returned 1.0 in
-every run and even reported the injected block as untrusted-but-harmless, while still concluding "no genuine
-discrepancies exist". My own Task 1 agent scores it **0.9** on three out of three runs (and 0.9 for the true
-`target_cv.pdf` as well), i.e. it is fooled by exactly the same coverage gap its own rules create: it refuses
-the injection and then finds no `real` discrepancy, because every field it was told to compare agrees.
+three runs for all five. To be precise about the noise: the hardened, tool-calling and narrow-coverage
+designs returned 1.0 in all three runs, the naive one returned 0.95, 0.95 and one unparseable reply, and the
+rule-based one returned 1.0, 1.0 and one unparseable reply — the hidden layer alone is enough to occasionally
+break a verifier's output parsing, which counts as a miss rather than a pass for us. What matters is that
+none of the three designs ever reported the two education embellishments as discrepancies; when they
+returned a score they said the CV was accurate, and one of them explicitly wrote "no genuine discrepancies
+exist" while noting that the injected block was untrusted and ignored. My own Task 1 agent scores the CV
+**0.9** on three out of three runs (and 0.9 for the true `target_cv.pdf` as well), i.e. it is fooled by
+exactly the same coverage gap its own rules create: it refuses the injection and then finds no `real`
+discrepancy, because every field it was told to compare agrees.
 
 Reproduce both halves with `python task2/make_adversarial_cv.py` (default `--placement submitted
 --injection soft`).
