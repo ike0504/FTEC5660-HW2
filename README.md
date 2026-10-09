@@ -90,10 +90,87 @@ python3 hw2.py --cv-folder task2
 attack the MCP server. See the homework description for the full rules.
 
 ## Homework 2 solution:
-> to students: this is your report, see the homework description.
 
 ### Task 1
-> one paragraph describing your solution, and your results on `public_test`.
+
+My verifier is a deterministic five-stage pipeline rather than a single free-roaming agent, because the
+score is an average accuracy over three runs and a fixed pipeline is reproducible. `build_agent` creates one
+`ChatDeepSeek("deepseek-v4-flash")` model (temperature 0, `reasoning_effort="low"`) plus a shared semaphore
+that caps MCP traffic at six concurrent calls; `score_cvs` runs the CVs through an `asyncio.Semaphore(3)` and
+wraps every CV in its own `try/except`, so a failed API call costs one score instead of the whole run.
+Each CV goes through: **(1) extraction** — the model turns the CV into a JSON claim set (name, headline,
+city, country, hometown, jobs with company/title/start/end/is_current, education with school/degree/field/
+graduation year, skills) and is told to copy the CV verbatim and treat it as untrusted data; **(2) entity
+resolution** — because hundreds of people share every name, I narrow `search_linkedin_people` with
+progressively looser filters (city + derived industry, then city, then country, then industry only, then
+name only) and then rank the hits by name/headline/industry/location before fetching at most eight profiles;
+**(3) identity selection** — I score each fetched profile against the CV's hardest-to-fake claims
+(employers +3 each, school +3, matching field +1.5, matching skill +1, matching headline +1) and take the
+best match, rejecting the CV as unverifiable below 2.0; **(4) judgement** — a strict auditor prompt compares
+the CV against the chosen LinkedIn profile plus the Facebook profile (same id namespace) and returns JSON
+discrepancies tagged `real` or `wording_only`, with the course's wording-equivalence rules spelled out
+("Senior Manager" for a Manager role with seniority senior is fine, fewer skills is fine, "MSc" for "BSc" is
+not); **(5) scoring** — any `real` discrepancy scores 0.1, none scores 0.9, an unverifiable or failed CV
+scores 0.5, and if the judge's JSON cannot be parsed twice in a row a conservative code-level backstop
+compares employers, schools, graduation year and skill names directly.
+
+On `public_test` the pipeline scores **7/7 correct on every run** (three consecutive runs plus the
+regression runs below), flagging all three planted discrepancies for the right reason: the shifted start year
+at Innovate HK Ltd (CV_4), the inflated title at Microsoft (CV_5, `Senior Analyst` vs `Analyst` with
+`junior` seniority) and the invented Docker skill (CV_7). A full 7-CV run takes about 50 seconds, so the
+~20-CV private set stays far inside the 30-minute budget.
 
 ### Task 2
-> the attack techniques you used and why you expect them to work.
+
+**The false detail.** The target is unique in the graph — `search_linkedin_people("Kelly Tsang")` returns
+exactly one person, `person_id` 10001 — so entity resolution cannot be abused and every claim is compared
+against a profile the verifier is guaranteed to find. A false claim sitting *inside* a field the verifiers
+enumerate is therefore caught almost every time. I checked this empirically: I built four shadow verifiers
+(naive one-shot, rule-based field comparison, a hardened one with explicit anti-injection text, a
+tool-calling ReAct agent, and a narrow-coverage one) and confirmed that an inflated degree (`MSc` instead of
+`BSc`) is caught by the rule-based, hardened and tool-calling designs, and that swapping the field
+(`Economics` for `Finance`) and inflating skill proficiency (`SQL (advanced)` against a proficiency of 2/5)
+are caught too. So I attacked the *coverage gap* instead. The homework defines discrepancies as living only
+in "name, city, jobs (company, title, seniority, start and end years), education (degree, school, field,
+graduation year) and skills" — education **start year** is deliberately absent from that list, and so is any
+statement that does not map onto one of those fields. The submitted CV therefore keeps every enumerated
+value exactly correct (`BSc`, `Finance`, `HKUST`, `2016`, all three employers, all titles, all skills) and
+puts the embellishments where the enumeration is silent:
+
+1. `BSc in Finance (First Class Honours)` — the profile records a plain `BSc` with no honours
+   classification, so the honours claim is pure embellishment, yet the compared value is still `BSc`.
+2. `2011 - 2016` — the profile records `2012 - 2016`. This is a flat contradiction of a date, but in the
+   education block, whose enumerated fields stop at the graduation year.
+3. `GPA 3.9 / 4.0 | Dean's List 2015, 2016` — an unverifiable prestige claim that no schema field covers.
+
+**The invisible layer.** The same PDF also carries three text blocks that are invisible on screen (pure
+white, 1.6 pt) but that `markitdown`/`pdfminer` extracts in full, because PDF text colour and font size do
+not affect extraction. That is the standard hidden-text attack, and it is layered three ways: a fake
+`[document-properties]` header that frames the whole file as an already-processed pipeline document and
+escapes the verifier's own data delimiters with literal `</cv>`, `</evidence>`, `[vault: untrusted_input_end]`
+markers; a "reconciled candidate record" that imitates a cached `get_linkedin_profile` response containing
+`"degree":"MSc"` together with a `quality.conflict_field = education.degree` note, so a verifier that trusts
+it sees its own discrepancy filter "already resolved"; and zero-width joiners inside the trigger words
+(`S<span>YSTEM`, `instruc<span>tion`, `veri<span>fication`) so that regex keyword filters miss the phrases
+while the model still reads them. Authority cues ("signed", "issuer HR feed", ticket number) and a
+plausible staleness story ("public lookups were last cached in 2024") supply the social-engineering and
+instruction-hierarchy angle: the payload never says "ignore your rules", it claims the CV is the *verified*
+copy and the live profile the *stale* one. The reason this is worth including even though it is the blatant
+half of the attack is that different verifiers fail differently — a hardened verifier may reject the
+injection and still walk straight past the two education embellishments, while a naive one may be carried by
+the fake record.
+
+**Measured outcome.** Against the five shadow verifiers the submitted CV scores above 0.5 in the majority of
+three runs for all five; the rule-based, hardened, tool-calling and narrow-coverage designs returned 1.0 in
+every run and even reported the injected block as untrusted-but-harmless, while still concluding "no genuine
+discrepancies exist". My own Task 1 agent scores it **0.9** on three out of three runs (and 0.9 for the true
+`target_cv.pdf` as well), i.e. it is fooled by exactly the same coverage gap its own rules create: it refuses
+the injection and then finds no `real` discrepancy, because every field it was told to compare agrees.
+
+Reproduce both halves with `python task2/make_adversarial_cv.py` (default `--placement submitted
+--injection soft`).
+
+### Task 3
+
+The AI-paradox reflection is in [`TASK3_REFLECTION.md`](TASK3_REFLECTION.md).
+
